@@ -1,0 +1,117 @@
+#include <MPU6050_tockn.h>
+#include <Wire.h>
+
+#define IN1 13
+#define IN2 12
+#define ENA 6
+#define ENB 5
+#define IN3 9
+#define IN4 8
+
+MPU6050 mpu6050(Wire);
+
+// กำหนดค่า offset ที่ได้จากการปรับเทียบครั้งแรก
+float gyroOffsetX = 11.33;  // ตัวอย่างค่า offset สำหรับแกน X
+float gyroOffsetY = -2.50;   // ตัวอย่างค่า offset สำหรับแกน Y
+float gyroOffsetZ = -200; // ตัวอย่างค่า offset สำหรับแกน Z
+
+
+float kp = 45, ki = 1.40, kd = 10.4;  // ค่าพารามิเตอร์ PID
+float setpoint = -12.8;
+float error, lastError, integral, derivative, output;
+
+String inputString = "";
+bool stringComplete = false;
+
+void setup() {
+  Serial.begin(9600);
+  Wire.begin();
+  mpu6050.begin();
+
+  // กำหนดค่า offset โดยใช้ setGyroOffsets
+  mpu6050.setGyroOffsets(gyroOffsetX, gyroOffsetY, gyroOffsetZ);
+
+  pinMode(ENA, OUTPUT);
+  pinMode(IN1, OUTPUT);
+  pinMode(IN2, OUTPUT);
+  pinMode(ENB, OUTPUT);
+  pinMode(IN3, OUTPUT);
+  pinMode(IN4, OUTPUT);
+
+  Serial.println("Ready! Type: kp=, ki=, kd=");
+}
+
+void loop() {
+  mpu6050.update();
+  float angleX = mpu6050.getAngleX();  // อ่านค่ามุมจากแกน X (Pitch)
+  float adjustedAngle = angleX;
+
+  pidControl(adjustedAngle);
+  sendDataForGraph(adjustedAngle, output);
+
+  if (stringComplete) {
+    parsePIDInput(inputString);
+    inputString = "";
+    stringComplete = false;
+  }
+
+  delay(10);
+}
+
+void pidControl(float pitch) {
+  error = setpoint - pitch;
+  integral += error;
+  derivative = error - lastError;
+  output = kp * error + ki * integral + kd * derivative;
+  lastError = error;
+  motorcontrol(output);
+}
+
+void motorcontrol(float output) {
+  int motorSpeed = constrain(output, -255, 255);
+  bool forward = motorSpeed > 0;
+
+  analogWrite(ENA, abs(motorSpeed));
+  digitalWrite(IN1, forward ? LOW : HIGH);
+  digitalWrite(IN2, forward ? HIGH : LOW);
+
+  analogWrite(ENB, abs(motorSpeed));
+  digitalWrite(IN3, forward ? LOW : HIGH);
+  digitalWrite(IN4, forward ? HIGH : LOW);
+}
+
+void serialEvent() {
+  while (Serial.available()) {
+    char inChar = (char)Serial.read();
+    if (inChar == '\n') {
+      stringComplete = true;
+    } else {
+      inputString += inChar;
+    }
+  }
+}
+
+void parsePIDInput(String input) {
+  input.trim();
+  input.toLowerCase();
+
+  if (input.startsWith("kp=")) {
+    kp = input.substring(3).toFloat();
+    Serial.print("Set kp = "); Serial.println(kp);
+  } else if (input.startsWith("ki=")) {
+    ki = input.substring(3).toFloat();
+    Serial.print("Set ki = "); Serial.println(ki);
+  } else if (input.startsWith("kd=")) {
+    kd = input.substring(3).toFloat();
+    Serial.print("Set kd = "); Serial.println(kd);
+  } else {
+    Serial.println("Invalid input. Use: kp=, ki=, kd=");
+  }
+}
+
+void sendDataForGraph(float angle, float output) {
+  Serial.print("angle:");
+  Serial.print(angle);
+  Serial.print(",output:");
+  Serial.println(output);
+}
