@@ -1,0 +1,153 @@
+#include <MPU6050_tockn.h>
+#include <Wire.h>
+#include <IRremote.h>
+
+decode_results results;
+
+// ปุ่มรีโมท
+#define UP_CODE     0xFF18E7
+#define DOWN_CODE   0xFF4AB5
+#define OK_CODE     0xFF38C7
+#define LEFT_CODE   0xFF10EF
+#define RIGHT_CODE  0xFF5AA5
+
+const int IR_PIN = 4;
+IRrecv irrecv(IR_PIN);
+
+MPU6050 mpu6050(Wire);
+
+// PID parameters
+float kp = 40, ki = 1.7, kd = 11.4;
+float setpoint = 0;  // ล็อกไว้ที่ 0 เสมอ
+float error, lastError = 0, integral = 0, derivative, output;
+const float dt = 0.01;
+const float integralMax = 80;
+const float angleThreshold = 0.5;
+
+// smoothing
+const float smoothingFactor = 0.05;
+float smoothedOutput = 0;
+
+// มอเตอร์
+const int maxSpeed = 255;
+#define ENA 6
+#define IN1 13
+#define IN2 12
+#define ENB 5
+#define IN3 9
+#define IN4 8
+
+int speedOffset = 0;
+const int speedOffsetStep = 5;
+const int speedOffsetMax  = 20;
+
+int turnOffset = 0;
+const int turnStep = 6;
+const int turnMax  = 15;
+
+// ตัวแปรล้ม
+bool locked = false;
+
+void setup() {
+  Serial.begin(9600);
+  Wire.begin();
+  mpu6050.begin();
+  mpu6050.setGyroOffsets(1.73, 1.56, 0.62);
+
+  pinMode(ENA, OUTPUT); pinMode(IN1, OUTPUT); pinMode(IN2, OUTPUT);
+  pinMode(ENB, OUTPUT); pinMode(IN3, OUTPUT); pinMode(IN4, OUTPUT);
+
+  irrecv.enableIRIn();
+
+  setpoint = 0;
+  Serial.println(F("Ready for IR input..."));
+}
+
+void loop() {
+  // อ่าน IR เสมอ
+  if (irrecv.decode(&results)) {
+    switch(results.value) {
+      case UP_CODE:
+        speedOffset += speedOffsetStep;
+        break;
+      case DOWN_CODE:
+        speedOffset -= speedOffsetStep;
+        break;
+      case LEFT_CODE:
+        turnOffset -= turnStep;
+        break;
+      case RIGHT_CODE:
+        turnOffset += turnStep;
+        break;
+      case OK_CODE:
+        speedOffset = 0;
+        turnOffset  = 0;
+        locked = false;
+        Serial.println("UNLOCKED");
+        break;
+    }
+
+    speedOffset = constrain(speedOffset, -speedOffsetMax, speedOffsetMax);
+    turnOffset  = constrain(turnOffset, -turnMax, turnMax);
+
+    Serial.print("off="); Serial.print(speedOffset);
+    Serial.print("  turn="); Serial.println(turnOffset);
+
+    irrecv.resume();
+  }
+
+  mpu6050.update();
+  float angle = mpu6050.getAngleX();
+
+  if (!locked && abs(angle) > 45) {
+    drive(0, 0, true);
+    Serial.println("STOP: angle too high");
+    locked = true;
+    return;
+  }
+
+  if (locked) {
+    drive(0, 0, true);
+    return;
+  }
+
+  // PID
+  error     = setpoint - angle;
+  integral += (error + lastError) * 0.5 * dt;
+  integral  = constrain(integral, -integralMax, integralMax);
+  derivative= (error - lastError) / dt;
+  output    = kp * error + ki * integral + kd * derivative;
+  lastError = error;
+
+  if (fabs(error) < angleThreshold) output *= 0.5;
+
+  smoothedOutput = smoothedOutput * (1 - smoothingFactor) + output * smoothingFactor;
+  output = smoothedOutput;
+
+  int baseSpeed  = constrain(abs(output), 0, maxSpeed);
+  int leftSpeed  = constrain(baseSpeed + speedOffset + turnOffset,  0, maxSpeed);
+  int rightSpeed = constrain(baseSpeed + speedOffset - turnOffset,  0, maxSpeed);
+
+  if (output > 0) {
+    drive(leftSpeed, rightSpeed, true);
+  }
+  else if (output < 0) {
+    drive(leftSpeed, rightSpeed, false);
+  }
+  else {
+    drive(0, 0, true);
+  }
+
+  delay(dt * 1000);
+}
+
+// ควบคุมมอเตอร์
+void drive(int lspd, int rspd, bool forward) {
+  analogWrite(ENA, lspd);
+  digitalWrite(IN1, forward ? LOW  : HIGH);
+  digitalWrite(IN2, forward ? HIGH : LOW);
+
+  analogWrite(ENB, rspd);
+  digitalWrite(IN3, forward ? LOW  : HIGH);
+  digitalWrite(IN4, forward ? HIGH : LOW);
+}
